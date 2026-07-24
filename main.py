@@ -19,7 +19,7 @@ import uvicorn
 BOT_TOKEN = "8699906911:AAG9WtpM45hjrHp1wk85ZTwDeIKe6VkveRQ"
 
 # Ваш Telegram ID (получите его через @userinfobot и вставьте сюда вместо 0)
-ADMIN_CHAT_ID = 0  
+ADMIN_CHAT_ID = 8107095434
 
 PRICES_FILE = "prices.json"
 
