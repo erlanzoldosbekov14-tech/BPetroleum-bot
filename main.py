@@ -1,55 +1,31 @@
 import os
 import json
-import logging
-import asyncio
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import (
-    ReplyKeyboardMarkup, 
-    KeyboardButton, 
-    ReplyKeyboardRemove
-)
-import uvicorn
 
-# --- НАСТРОЙКИ ---
-# Токен вашего бота от BotFather
-BOT_TOKEN = "8699906911:AAG9WtpM45hjrHp1wk85ZTwDeIKe6VkveRQ"
-
-# Ваш Telegram ID (получите его через @userinfobot и вставьте сюда вместо 0)
+# ================= Настройки =================
+BOT_TOKEN = "8699906911:AAG9WtpM45hjrHp1wk85zTwDeIKe6vkeRQ"
 ADMIN_CHAT_ID = 8107095434
 
+RENDER_URL = "https://bpetroleum-bot.onrender.com"
+
 PRICES_FILE = "prices.json"
+default_prices = {"АИ-92": 84.50, "АИ-95": 91.00, "АИ-98": 98.50, "ДТ": 88.20}
 
-DEFAULT_PRICES = {
-    "АИ-92": 84.50,
-    "АИ-95": 91.00,
-    "АИ-98": 98.50,
-    "ДТ": 88.20
-}
-
-def load_prices():
-    if not os.path.exists(PRICES_FILE):
-        save_prices(DEFAULT_PRICES)
-        return DEFAULT_PRICES
+if os.path.exists(PRICES_FILE):
     try:
         with open(PRICES_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            prices = json.load(f)
     except Exception:
-        return DEFAULT_PRICES
+        prices = default_prices
+else:
+    prices = default_prices
 
-def save_prices(prices):
-    with open(PRICES_FILE, "w", encoding="utf-8") as f:
-        json.dump(prices, f, ensure_ascii=False, indent=2)
-
-prices_data = load_prices()
-
-# --- FASTAPI И AIOGRAM ---
-app = FastAPI()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,153 +35,64 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- КЛАВИАТУРЫ ---
-admin_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="📊 Посмотреть текущие цены")],
-        [KeyboardButton(text="✏️ Изменить цены")]
-    ],
-    resize_keyboard=True
-)
+# Автоматическая установка Webhook при запуске
+@app.on_event("startup")
+async def on_startup():
+    webhook_url = f"{RENDER_URL}/webhook"
+    await bot.set_webhook(webhook_url)
 
-client_phone_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="📱 Поделиться номером телефона", request_contact=True)]
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=True
-)
+# Эндпоинт, куда Telegram присылает сообщения
+@app.post("/webhook")
+async def bot_webhook(request: Request):
+    update = types.Update.model_validate(await request.json(), context={"bot": bot})
+    await dp.feed_update(bot, update)
+    return {"ok": True}
 
-# --- ЛОГИКА ТЕЛЕГРАМ БОТА ---
+# REST API для сайта
+@app.get("/")
+def read_root():
+    return {"status": "ok", "message": "Bishkek Petroleum Bot API"}
 
+@app.get("/api/prices")
+def get_prices():
+    return prices
+
+# Команды бота
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    # Если зашел администратор
-    if message.from_user.id == ADMIN_CHAT_ID:
-        await message.answer("Панель администратора Bishkek Petroleum активна.", reply_markup=admin_kb)
-        return
-    
-    # Если зашел клиент
     await message.answer(
-        "Здравствуйте! 👋\n"
-        "Для получения виртуальной карты Bishkek Petroleum, нажмите кнопку ниже, чтобы поделиться контактом:",
-        reply_markup=client_phone_kb
+        "👋 **Панель Bishkek Petroleum**\n\n"
+        "Для смены цены отправь: `/set 92 86.00`",
+        parse_mode="Markdown"
     )
-
-# Прием контакта от клиента
-@dp.message(F.contact)
-async def handle_contact(message: types.Message):
-    phone = message.contact.phone_number
-    user_name = message.from_user.full_name
-    username = f"@{message.from_user.username}" if message.from_user.username else "нет username"
-
-    await message.answer(
-        "✅ Спасибо! Ваша заявка принята.\n"
-        "Менеджер свяжется с вами для активации карты.",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
-    if ADMIN_CHAT_ID != 0:
-        admin_text = (
-            "💳 <b>Новая заявка на виртуальную карту!</b>\n\n"
-            f"👤 <b>Имя:</b> {user_name} ({username})\n"
-            f"📱 <b>Телефон:</b> <code>{phone}</code>"
-        )
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_text, parse_mode="HTML")
-
-# Управление ценами (для админа)
-@dp.message(F.text == "📊 Посмотреть текущие цены")
-async def show_prices(message: types.Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
-    msg = "<b>Текущие цены на топливо:</b>\n\n"
-    for fuel, price in prices_data.items():
-        msg += f"• <b>{fuel}:</b> {price} сом/л\n"
-    await message.answer(msg, parse_mode="HTML")
-
-@dp.message(F.text == "✏️ Изменить цены")
-async def edit_prices_info(message: types.Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
-    help_text = (
-        "Чтобы изменить цену, отправьте команду:\n\n"
-        "<code>/set 92 85.00</code> — измерить АИ-92\n"
-        "<code>/set 95 92.50</code> — измерить АИ-95\n"
-        "<code>/set 98 99.00</code> — измерить АИ-98\n"
-        "<code>/set dt 89.00</code> — измерить ДТ"
-    )
-    await message.answer(help_text, parse_mode="HTML")
 
 @dp.message(Command("set"))
-async def set_price(message: types.Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
-    
-    args = message.text.split()
-    if len(args) != 3:
-        await message.answer("⚠️ Используйте формат: `/set 92 85.00`", parse_mode="Markdown")
+async def cmd_set_price(message: types.Message):
+    if ADMIN_CHAT_ID != 0 and message.from_user.id != ADMIN_CHAT_ID:
+        await message.answer("⛔ У вас нет прав администратора.")
         return
 
-    fuel_code = args[1].lower()
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("⚠️ Использование: `/set 92 86.00`", parse_mode="Markdown")
+        return
+
+    fuel_raw = args[1].lower()
     try:
         new_price = float(args[2].replace(',', '.'))
     except ValueError:
-        await message.answer("⚠️ Некорректное число!")
+        await message.answer("❌ Укажите корректную цену.")
         return
 
-    mapping = {"92": "АИ-92", "95": "АИ-95", "98": "АИ-98", "dt": "ДТ", "дт": "ДТ"}
-    
-    if fuel_code not in mapping:
-        await message.answer("⚠️ Неизвестная марка топлива. Доступны: 92, 95, 98, dt")
+    fuel_map = {"92": "АИ-92", "95": "АИ-95", "98": "АИ-98", "dt": "ДТ"}
+    if fuel_raw not in fuel_map:
+        await message.answer("❌ Неизвестная марка (используйте 92, 95, 98, dt).")
         return
 
-    fuel_name = mapping[fuel_code]
-    prices_data[fuel_name] = new_price
-    save_prices(prices_data)
+    fuel_key = fuel_map[fuel_raw]
+    prices[fuel_key] = new_price
 
-    await message.answer(f"✅ Цена на <b>{fuel_name}</b> обновлена: <b>{new_price} сом/л</b>", parse_mode="HTML")
+    with open(PRICES_FILE, "w", encoding="utf-8") as f:
+        json.dump(prices, f, ensure_ascii=False, indent=4)
 
-# --- API ДЛЯ СЕЙТА ---
-
-class LeadRequest(BaseModel):
-    phone: str
-    fuel: str
-    distance: float
-    liters: float
-    total: float
-
-@app.get("/api/prices")
-async def get_prices():
-    return prices_data
-
-@app.post("/api/order")
-async def send_order(order: LeadRequest):
-    if ADMIN_CHAT_ID != 0:
-        text = (
-            "🚗 <b>Заявка с сайта (Калькулятор)!</b>\n\n"
-            f"📱 <b>Телефон:</b> <code>{order.phone}</code>\n"
-            f"⛽ <b>Топливо:</b> {order.fuel}\n"
-            f"📏 <b>Расстояние:</b> {order.distance} км\n"
-            f"🪣 <b>Объем:</b> {order.liters} л\n"
-            f"💰 <b>Сумма:</b> {order.total} сом"
-        )
-        try:
-            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode="HTML")
-            return {"status": "ok"}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-    return {"status": "ok"}
-
-# --- ЗАПУСК ---
-async def main():
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
-    server = uvicorn.Server(config)
-    
-    await asyncio.gather(
-        server.serve(),
-        dp.start_polling(bot)
-    )
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    asyncio.run(main())
+    await message.answer(f"✅ Цена на **{fuel_key}** обновлена: `{new_price:.2f}` сом/л", parse_mode="Markdown")
